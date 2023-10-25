@@ -35,16 +35,15 @@ int main(int argc, char * argv[]) {
   gas.LoadIonMobility(path + "/share/Garfield/Data/IonMobility_Ar+_Ar.txt");
 
   // Load the field map.
-  ComponentAnsys123 fm;
-  fm.Initialise("ELIST.lis", "NLIST.lis", "MPLIST.lis", "PRNSOL.lis", "mm");
-  fm.EnableMirrorPeriodicityX();
-  fm.EnableMirrorPeriodicityY();
-  fm.PrintRange();
+  ComponentElmer* elm = new ComponentElmer("gemcell/mesh.header", "gemcell/mesh.elements", "gemcell/mesh.nodes","gemcell/dielectrics.dat", "gemcell/gemcell.result", "cm");
+  elm.EnableMirrorPeriodicityX();
+  elm.EnableMirrorPeriodicityY();
+  elm.PrintRange();
 
   // Associate the gas with the corresponding field map material.
-  fm.SetGas(&gas); 
-  fm.PrintMaterials();
-  // fm.Check();
+  elm.SetGas(&gas); 
+  elm.PrintMaterials();
+  // elm.Check();
 
   // Dimensions of the GEM [cm]
   constexpr double pitch = 0.014;
@@ -53,7 +52,7 @@ int main(int argc, char * argv[]) {
   ViewFEMesh meshView;
   constexpr bool plotField = true;
   if (plotField) {
-    fieldView.SetComponent(&fm);
+    fieldView.SetComponent(&elm);
     // Set the normal vector of the viewing plane (xz plane).
     fieldView.SetPlane(0, -1, 0, 0, 0, 0);
     // Set the plot limits in the current viewing plane.
@@ -66,7 +65,7 @@ int main(int argc, char * argv[]) {
 
     meshView.SetArea(-0.5 * pitch, -0.02, 0.5 * pitch, 0.02); 
     meshView.SetCanvas(cf);
-    meshView.SetComponent(&fm);
+    meshView.SetComponent(&elm);
     meshView.SetPlane(0, -1, 0, 0, 0, 0);
     meshView.SetFillMesh(true);
     meshView.SetColor(2, kGray);
@@ -75,7 +74,7 @@ int main(int argc, char * argv[]) {
 
   // Create the sensor.
   Sensor sensor;
-  sensor.AddComponent(&fm);
+  sensor.AddComponent(&elm);
   sensor.SetArea(-5 * pitch, -5 * pitch, -0.01,
                   5 * pitch,  5 * pitch,  0.025);
 
