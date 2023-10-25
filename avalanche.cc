@@ -31,31 +31,16 @@ using namespace Garfield;
 int main(int argc, char* argv[]) {
 
   TApplication app("app", &argc, argv);
-
-  // Set relevant LEM parameters.
-  // LEM thickness in cm
-  const double lem_th = 0.04;      
-  // Copper thickness
-  const double lem_cpth = 0.0035;  
-  // LEM pitch in cm
-  const double lem_pitch = 0.07;   
-  // X-width of drift simulation will cover between +/- axis_x
-  const double axis_x = 0.1;  
-  // Y-width of drift simulation will cover between +/- axis_y
-  const double axis_y = 0.1;  
-  const double axis_z = 0.25 + lem_th / 2 + lem_cpth;
-
-
+  plottingEngine.SetDefaultStyle();
   // Define the medium.
+  // Setup the gas.
   MediumMagboltz* gas = new MediumMagboltz();
-  // Set the temperature (K)
-  gas->SetTemperature(293.15);  
-  // Set the pressure (Torr)
-  gas->SetPressure(740.);       
-  // Allow for drifting in this medium
-  gas->EnableDrift();           
-  // Specify the gas mixture (Ar/CO2 70:30)
-  gas->SetComposition("ar", 70., "co2", 30.);  
+  gas->SetComposition("ar", 90., "ch4", 10.);
+  gas->SetTemperature(293.15);
+  gas->SetPressure(760.);
+  gas->EnableDebugging();
+  gas->Initialise();  
+  gas->DisableDebugging();
 
   // Import an Elmer-created field map.
   ComponentElmer* elm = new ComponentElmer(
@@ -64,112 +49,97 @@ int main(int argc, char* argv[]) {
   elm->EnablePeriodicityX();
   elm->EnableMirrorPeriodicityY();
   elm->SetMedium(0, gas);
+  elm->PrintRange();
   // Import the weighting field for the readout electrode.
   // elm->SetWeightingField("gemcell/gemcell_WTlel.result", "wtlel");
 
-  // Set up a sensor object.
+  // Dimensions of the GEM [cm]
+  const double pitch = 0.014;
+
+  const bool plotField = true;
+  if (plotField) {
+    ViewField* fieldView = new ViewField();
+    fieldView->SetComponent(elm);
+    fieldView->SetPlane(0., -1., 0., 0., 0., 0.);
+    fieldView->SetArea(-pitch / 2., -0.02, pitch / 2., 0.02);
+    fieldView->SetVoltageRange(-160., 160.);
+    TCanvas* cf = new TCanvas();
+    fieldView->SetCanvas(cf);
+    fieldView->PlotContour();
+  }
+
+
+  // Set the Penning transfer efficiency.
+  const double rPenning = 0.51;
+  const double lambdaPenning = 0.;
+  gas->EnablePenningTransfer(rPenning, lambdaPenning, "ar");
+  // Load the ion mobilities.
+  const std::string path = getenv("GARFIELD_HOME");
+  gas->LoadIonMobility(path + "/Data/IonMobility_Ar+_Ar.txt");
+  // Associate the gas with the corresponding field map material. 
+  const unsigned int nMaterials = elm->GetNumberOfMaterials();
+  for (unsigned int i = 0; i < nMaterials; ++i) {
+    const double eps = elm->GetPermittivity(i);
+    if (eps == 1.) elm->SetMedium(i, gas);
+  }
+  elm->PrintMaterials();
+
+  
+  // Create the sensor.
   Sensor* sensor = new Sensor();
   sensor->AddComponent(elm);
-  sensor->SetArea(-axis_x, -axis_y, -axis_z, axis_x, axis_y, axis_z);
-  // sensor->AddElectrode(elm, "wtlel");
-  // Set the signal binning.
-  const double tEnd = 500.0;
-  const int nsBins = 500;
-  // sensor->SetTimeWindow(0., tEnd / nsBins, nsBins);
+  sensor->SetArea(-5 * pitch, -5 * pitch, -0.01,
+                   5 * pitch,  5 * pitch,  0.025);
 
-  // Create an avalanche object
   AvalancheMicroscopic* aval = new AvalancheMicroscopic();
   aval->SetSensor(sensor);
-  aval->SetCollisionSteps(100);
-  // aval->EnableSignalCalculation();
 
-  // Set up the object for drift line visualization.
-  ViewDrift* viewDrift = new ViewDrift();
-  viewDrift->SetArea(-axis_x, -axis_y, -axis_z, axis_x, axis_y, axis_z);
-  aval->EnablePlotting(viewDrift);
+  AvalancheMC* drift = new AvalancheMC();
+  drift->SetSensor(sensor);
+  drift->SetDistanceSteps(2.e-4);
 
-  // Set the electron start parameters.
-  // Starting z position for electron drift
-  const double zi = 0.5 * lem_th + lem_cpth + 0.1;  
-  double ri = (lem_pitch / 2) * RndmUniform();
-  double thetai = RndmUniform() * TwoPi;
-  double xi = ri * cos(thetai);
-  double yi = ri * sin(thetai);
-  // Calculate the avalanche.
-  aval->AvalancheElectron(xi, yi, zi, 0., 0., 0., 0., 0.);
-  std::cout << "... avalanche complete with "
-            << aval->GetNumberOfElectronEndpoints() << " electron tracks.\n";
-
-  // Extract the calculated signal.
-  double bscale = tEnd / nsBins;  // time per bin
-  double sum = 0.;  // to keep a running sum of the integrated signal
-
-  // Create ROOT histograms of the signal and a file in which to store them.
-  TFile* f = new TFile("avalanche_signals.root", "RECREATE");
-  TH1F* hS = new TH1F("hh", "hh", nsBins, 0, tEnd);        // total signal
-  TH1F* hInt = new TH1F("hInt", "hInt", nsBins, 0, tEnd);  // integrated signal
-
-  // Fill the histograms with the signals.
-  //  Note that the signals will be in C/(ns*binWidth), and we will divide by e
-  // to give a signal in e/(ns*binWidth).
-  //  The total signal is then the integral over all bins multiplied by the bin
-  // width in ns.
-  for (int i = 0; i < nsBins; i++) {
-    double wt = sensor->GetSignal("wtlel", i) / ElementaryCharge;
-    sum += wt;
-    hS->Fill(i * bscale, wt);
-    hInt->Fill(i * bscale, sum);
+  const bool plotDrift = true;
+  ViewDrift* driftView = new ViewDrift();
+  if (plotDrift) {
+    driftView->SetArea(-2 * pitch, -2 * pitch, -0.02,
+                        2 * pitch,  2 * pitch,  0.02); 
+    aval->EnablePlotting(driftView);
+    drift->EnablePlotting(driftView);
   }
 
-  // Write the histograms to the TFile.
-  hS->Write();
-  hInt->Write();
-  f->Close();
-
-  // Plot the signal.
-  const bool plotSignal = false;
-  if (plotSignal) {
-    TCanvas* cSignal = new TCanvas("signal", "Signal");
-    ViewSignal* vSignal = new ViewSignal();
-    vSignal->SetSensor(sensor);
-    vSignal->SetCanvas(cSignal);
-    vSignal->PlotSignal("wtlel");
+ const int nEvents = 10;
+  for (int i = nEvents; i--;) { 
+    if (debug || i % 10 == 0) std::cout << i << "/" << nEvents << "\n";
+    // Randomize the initial position. 
+    double x0 = -pitch / 2. + RndmUniform() * pitch;
+    double y0 = -pitch / 2. + RndmUniform() * pitch;
+    double z0 = 0.02; 
+    double t0 = 0.;
+    double e0 = 0.1;
+    aval->AvalancheElectron(x0, y0, z0, t0, e0, 0., 0., 0.);
+    int ne = 0, ni = 0;
+    aval->GetAvalancheSize(ne, ni);
+    const int np = aval->GetNumberOfElectronEndpoints();
+    double xe1, ye1, ze1, te1, e1;
+    double xe2, ye2, ze2, te2, e2;
+    double xi1, yi1, zi1, ti1;
+    double xi2, yi2, zi2, ti2;
+    int status;
+    for (int j = np; j--;) {
+      aval->GetElectronEndpoint(j, xe1, ye1, ze1, te1, e1, 
+                                   xe2, ye2, ze2, te2, e2, status);
+      drift->DriftIon(xe1, ye1, ze1, te1);
+      drift->GetIonEndpoint(0, xi1, yi1, zi1, ti1, 
+                               xi2, yi2, zi2, ti2, status);
+    }
   }
-
-  // Plot the geometry, field and drift lines.
-  TCanvas* cGeom = new TCanvas("geom", "Geometry/Avalanche/Fields");
-  const bool plotContours = false;
-  if (plotContours) {
-    ViewField* vf = new ViewField();
-    vf->SetSensor(sensor);
-    vf->SetCanvas(cGeom);
-    vf->SetArea(-axis_x, -axis_y, axis_x, axis_y);
-    vf->SetNumberOfContours(40);
-    vf->SetNumberOfSamples2d(30, 30);
-    vf->SetPlane(0, -1, 0, 0, 0, 0);
-    vf->PlotContour("v");
-  }
-
-  // Set up the object for FE mesh visualization.
-  ViewFEMesh* vFE = new ViewFEMesh();
-  vFE->SetArea(-axis_x, -axis_z, 0., axis_x, axis_z, 0.);
-  vFE->SetCanvas(cGeom);
-  vFE->SetComponent(elm);
-  vFE->SetPlane(0, -1, 0, 0, 0, 0);
-  vFE->SetFillMesh(true);
-  vFE->SetColor(1, kGray);
-  vFE->SetColor(2, kYellow + 3);
-  vFE->SetColor(3, kYellow + 3);
-  if (!plotContours) {
-    vFE->EnableAxes();
-    vFE->SetXaxisTitle("x (cm)");
-    vFE->SetYaxisTitle("z (cm)");
-    vFE->SetViewDrift(viewDrift);
-    vFE->Plot();
+  
+  if (plotDrift) {
+    TCanvas* cd = new TCanvas();
+    driftView->SetCanvas(cd);
+    driftView->Plot();
   }
 
   app.Run(kTRUE);
 
-  return 0;
 }
-
